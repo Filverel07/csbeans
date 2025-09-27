@@ -64,19 +64,7 @@ def detect_objects(image: np.ndarray, model: YOLO, conf_threshold: float = 0.25)
 
 #YOU CAN ADJUST MARGIN HERE > for the cropped results
 def crop_detections(image: np.ndarray, results: Any, margin: float = 0) -> List[Tuple[np.ndarray, Tuple[int, int, int, int]]]:
-    """
-    Crop detections with optional margin expansion.
 
-    Args:
-        image: input image (H, W, C).
-        results: YOLO results.
-        margin: extra space around the crop. 
-                If float < 1, it's a percentage of bbox size. 
-                If int >= 1, it's absolute pixels.
-
-    Returns:
-        List of (cropped_image, (x1, y1, x2, y2)).
-    """
     crops = []
     boxes = results[0].boxes
     if boxes is None or boxes.shape[0] == 0:
@@ -197,7 +185,7 @@ def process_image(image_bytes: bytes, det_model: YOLO, yolo_cls: YOLO, effnet, m
 # LiveCam Processor
 # =========================
 class LiveCamProcessor(VideoTransformerBase):
-    def __init__(self, det_model, yolo_cls, effnet, mobilenet, device, conf_threshold, classifier_choice):
+    def __init__(self, det_model, yolo_cls, effnet, mobilenet, device, conf_threshold, classifier_choice, margin=0):
         self.det_model = det_model
         self.yolo_cls = yolo_cls
         self.effnet = effnet
@@ -205,11 +193,12 @@ class LiveCamProcessor(VideoTransformerBase):
         self.device = device
         self.conf_threshold = conf_threshold
         self.classifier_choice = classifier_choice
+        self.margin = margin
 
-    def transform(self, frame: av.VideoFrame) -> np.ndarray:
+    def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
         image = frame.to_ndarray(format="bgr24")
         results = detect_objects(image, self.det_model, self.conf_threshold)
-        crops = crop_detections(image, results)
+        crops = crop_detections(image, results, self.margin)
 
         predictions = []
         for crop, _ in crops:
@@ -228,7 +217,7 @@ class LiveCamProcessor(VideoTransformerBase):
             })
 
         annotated = visualize_results(image, crops, predictions)
-        return annotated
+        return av.VideoFrame.from_ndarray(annotated, format="bgr24")
     
 # =========================
 # Streamlit App

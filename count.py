@@ -1,7 +1,7 @@
 from pathlib import Path
 
 # Root directory to scan
-src_root = Path("crops_mergedDataset_Augmentedv2_1")
+src_root = Path("datasets/mergedDataset_Augmentedv2_1")
 
 # Supported image extensions
 valid_exts = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff'}
