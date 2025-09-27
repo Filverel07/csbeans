@@ -6,6 +6,7 @@ src_root = Path("crops_mergedDataset_Augmentedv2_1")
 # Supported image extensions
 valid_exts = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff'}
 
+
 # Counters
 subfolder_counts = {}
 total_images = 0

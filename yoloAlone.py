@@ -48,10 +48,10 @@ cls_transform = T.Compose([
 @st.cache_resource
 def load_models(device: str = 'cuda'):
     device = torch.device(device)
-    det_model = YOLO("runs/detect/200epochs_LT_FT/weights/best.pt").to(device)
-    yolo_cls = YOLO("runs/classify/224_v3_2_fineTuningv2/weights/best.pt").to(device)
-    effnet = torch.jit.load("models/newModels/effnet_27epoch.pt", map_location=device).eval()
-    mobilenet = torch.jit.load("models/mobilenetv3s_best_ts.pt", map_location=device).eval()
+    det_model = YOLO("models/newModels/objDet/yolo_objDet.pt").to(device)
+    yolo_cls = YOLO("models/newModels/Classify/yoloCLS_S.pt").to(device)
+    effnet = torch.jit.load("models/newModels/Classify/effnet_27epoch.pt", map_location=device).eval()
+    mobilenet = torch.jit.load("models/newModels/Classify/mobilenetv3s_best_ts.pt", map_location=device).eval() #Dili ni ga work kay different classses ang ge training ani
     return det_model, yolo_cls, effnet, mobilenet, device
 
 # =========================
