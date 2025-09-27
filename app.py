@@ -41,6 +41,9 @@ cls_transform = T.Compose([
     T.ToTensor(),
 ])
 
+# basin mag add ta ug normalization later for some models if trained with imagenet weights
+# T.Normalize(mean=[0.485, 0.456, 0.406],
+
 # =========================
 # Model Loader
 # =========================
@@ -218,27 +221,38 @@ class LiveCamProcessor(VideoTransformerBase):
         self.margin = margin
         self.frame_count = 0
 
-    def transform(self, frame: av.VideoFrame) -> np.ndarray:
+    def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
+        """
+        Use recv instead of transform. Accepts an av.VideoFrame and returns an av.VideoFrame.
+        Preserves input frame timing (pts / time_base).
+        """
         self.frame_count += 1
         image = frame.to_ndarray(format="bgr24")
-        if self.frame_count % 8 != 0: #can change 8 to other number to adjust processing frequency
-            return image
-        
+        if self.frame_count % 8 != 0:  # adjust processing frequency
+            return frame
+
         results = detect_objects(image, self.det_model, self.conf_threshold)
         crops = crop_detections(image, results, self.margin)
         crop_images = [crop for crop, _ in crops]
-        
-        batch_predictions = classify_batch(crop_images, self.classifier_choice, 
-                                         self.yolo_cls, self.effnet, self.mobilenet, self.device)
-        
+
+        batch_predictions = classify_batch(
+            crop_images, self.classifier_choice,
+            self.yolo_cls, self.effnet, self.mobilenet, self.device
+        )
+
         # Ensure predictions match crops
         if len(batch_predictions) != len(crops):
-            return image  # Skip visualization if mismatch occurs
-        
-        predictions = [{"Crop ID": i + 1, "Top1 Class": preds[0][0], "Top1 Confidence": preds[0][1]} 
+            return frame  # Skip visualization if mismatch occurs
+
+        predictions = [{"Crop ID": i + 1, "Top1 Class": preds[0][0], "Top1 Confidence": preds[0][1]}
                        for i, preds in enumerate(batch_predictions)]
-        
-        return visualize_results(image, crops, predictions)
+
+        processed = visualize_results(image, crops, predictions)  # BGR ndarray
+
+        out_frame = av.VideoFrame.from_ndarray(processed, format="bgr24")
+        out_frame.pts = frame.pts
+        out_frame.time_base = frame.time_base
+        return out_frame
 
 # =========================
 # Streamlit App
