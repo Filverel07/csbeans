@@ -3,6 +3,8 @@ import av
 import streamlit as st
 from ultralytics import YOLO
 from streamlit_webrtc import webrtc_streamer, VideoTransformerBase
+import cv2
+import time
 #streamlit run realTime.py
 
 # --- Page Setup ---
@@ -21,9 +23,9 @@ if not available_models:
     st.sidebar.warning(f"No .pt files found in `{model_dir}/` folder.")
     st.stop()
 
-model_choice = st.sidebar.selectbox("Select YOLO model", available_models, index=0)
-conf_threshold = st.sidebar.slider("Confidence Threshold", 0.1, 1.0, 0.25, 0.05)
-img_size = st.sidebar.selectbox("Image Size", [320, 480, 640, 800], index=2)
+model_choice = st.sidebar.selectbox("Select Classification Model", available_models, index=0)
+conf_threshold = st.sidebar.slider("Detector Confidence Threshold", 0.1, 1.0, 0.25, 0.05)
+img_size = st.sidebar.selectbox("Image Size", [320, 480, 640, 800, 1080], index=2)
 
 # Load YOLO model
 model_path = os.path.join(model_dir, model_choice)
@@ -31,7 +33,21 @@ model = YOLO(model_path)
 
 # --- Video Transformer ---
 class YOLOv12Video(VideoTransformerBase):
+    def __init__(self):
+        self.prev_time = time.time()
+    
     def transform(self, frame):
+        
+        curr_time = time.time()
+        fps = 1 / (curr_time - self.prev_time)
+        self.prev_time = curr_time
+        
+        # Display FPS on the frame
+        cv2.putText(frame.to_ndarray(format="bgr24"), f"FPS: {fps:.2f}", (10, 30), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+    
+        # Run YOLOv12 detection
+        
         img = frame.to_ndarray(format="bgr24")
         results = model.predict(img, imgsz=img_size, conf=conf_threshold)
         annotated = results[0].plot()
