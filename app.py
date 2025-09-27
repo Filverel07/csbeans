@@ -29,6 +29,10 @@ CLASS_NAMES = ["Broken", "Dry_Cherries", "Floater", "Foreign_items", "Full_Black
                "Full_Sour", "Fungus_damage", "Husk", "Immature", "Parchment",
                "Severe_Insect_Damage", "Shell", "Withered"]
 
+YOLO_CLASS = ["Broken", "Cut", "DryCherry", "fade", "Floater", "FullBlack", "FullSour",
+              "FungusDamage", "Husk", "Immature", "Parchment", "PartialBlack",
+              "PartialSour", "SevereInsectDamage", "Shell", "SlightInsectDamage", "Withered"]
+
 NUM_CLASSES = len(CLASS_NAMES)
 
 # Color map for visualization
@@ -205,7 +209,7 @@ def process_image(image_bytes: bytes, det_model: YOLO, cls_model_yolo: YOLO, eff
         pred_class, conf = aggregate_predictions([probs_yolo, probs_eff, probs_mob], threshold=conf_threshold)
         
         # Get class names and confidence scores for each model
-        yolo_class = CLASS_NAMES[np.argmax(probs_yolo)]
+        yolo_class = YOLO_CLASS[np.argmax(probs_yolo)]
         yolo_conf = np.max(probs_yolo)
         eff_class = CLASS_NAMES[np.argmax(probs_eff)]
         eff_conf = np.max(probs_eff)

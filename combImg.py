@@ -1,11 +1,12 @@
 import os
 from PIL import Image
+from collections import defaultdict
 
 # === CONFIG ===
-input_dir = "datasets/defect_Unlabeled_aug/Images"  # Folder with 500x500 images
-output_dir = "stitched_Pages"
-tile_size = (224, 224)  # Width, Height of each image
-page_size = (3400, 5500)  # Long bond paper size in pixels
+input_dir = "datasets/defect_Unlabeled_aug/Images"
+output_dir = "stitched_Pages/512_by_512"
+tile_size = (512, 512)
+page_size = (3400, 5500)
 bg_color = (255, 255, 255)
 
 # === PREP ===
@@ -17,20 +18,32 @@ tiles_per_row = page_size[0] // tile_size[0]
 tiles_per_col = page_size[1] // tile_size[1]
 tiles_per_page = tiles_per_row * tiles_per_col
 
-# === STITCHING LOOP ===
-page_count = 0
-for i in range(0, len(image_files), tiles_per_page):
-    page_images = image_files[i:i + tiles_per_page]
-    stitched = Image.new('RGB', page_size, color=bg_color)
+# === GROUP BY CLASS ===
+def extract_classname(filename):
+    parts = os.path.splitext(filename)[0].split('_')
+    return parts[1] if len(parts) >= 2 else "unknown"
 
-    for idx, filename in enumerate(page_images):
-        img_path = os.path.join(input_dir, filename)
-        img = Image.open(img_path).resize(tile_size)
-        x = (idx % tiles_per_row) * tile_size[0]
-        y = (idx // tiles_per_row) * tile_size[1]
-        stitched.paste(img, (x, y))
+class_groups = defaultdict(list)
+for f in image_files:
+    cls = extract_classname(f)
+    class_groups[cls].append(f)
 
-    output_path = os.path.join(output_dir, f"page_{page_count + 1}.jpg")
-    stitched.save(output_path)
-    print(f"✅ Saved: {output_path}")
-    page_count += 1
+# === STITCHING LOOP PER CLASS ===
+for cls_name, cls_images in class_groups.items():
+    cls_output_dir = os.path.join(output_dir, cls_name)
+    os.makedirs(cls_output_dir, exist_ok=True)
+
+    for i in range(0, len(cls_images), tiles_per_page):
+        page_images = cls_images[i:i + tiles_per_page]
+        stitched = Image.new('RGB', page_size, color=bg_color)
+
+        for idx, filename in enumerate(page_images):
+            img_path = os.path.join(input_dir, filename)
+            img = Image.open(img_path).resize(tile_size)
+            x = (idx % tiles_per_row) * tile_size[0]
+            y = (idx // tiles_per_row) * tile_size[1]
+            stitched.paste(img, (x, y))
+
+        output_path = os.path.join(cls_output_dir, f"page_{(i // tiles_per_page) + 1}.jpg")
+        stitched.save(output_path)
+        print(f"✅ Saved: {output_path}")
