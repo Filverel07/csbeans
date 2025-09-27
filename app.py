@@ -1,304 +1,307 @@
-# app.py
-# Updated Coffee Bean Defect Detection Pipeline (PyTorch with TorchScript Models)
-# Modified to load EfficientNetV2-S and MobileNetV3-S as TorchScript models (.pt files) using torch.jit.load.
-# Assumes your .pt files are TorchScript archives (e.g., from torch.jit.script(model) or torch.jit.trace).
-# No need to create base models; directly load the scripted ones.
-# Ensure the scripted models have the 13-class output head.
-# Input sizes: EffNetV2-S expects 384x384, MobileNetV3-S 224x224 (transforms unchanged).
-#
-# Setup Instructions:
-# 1. Install: pip install ultralytics streamlit opencv-python pillow numpy pandas torch torchvision
-# 2. Update paths: Set to your TorchScript .pt files (e.g., 'models/effv2s_best_ts.pt').
-# 3. If models were scripted after fine-tuning with num_classes=13, they should output 13 probs.
-# 4. Run: streamlit run app.py
-# 5. For GPU: Select 'cuda' in sidebar (requires CUDA).
-
-import streamlit as st
+import os
+import io
+from pathlib import Path
+from typing import List, Tuple, Dict, Any
+import cv2
 import numpy as np
 import pandas as pd
-import cv2
-from PIL import Image, ImageDraw
+import streamlit as st
 import torch
-from torchvision import transforms
+import torchvision.transforms as T
+from PIL import Image
 from ultralytics import YOLO
-import io
-from typing import List, Tuple, Dict, Any
+from streamlit_webrtc import webrtc_streamer, VideoTransformerBase
+import av
 
-# Define the 13 defect classes
-CLASS_NAMES = ["Broken", "Dry_Cherries", "Floater", "Foreign_items", "Full_Black",
-               "Full_Sour", "Fungus_damage", "Husk", "Immature", "Parchment",
-               "Severe_Insect_Damage", "Shell", "Withered"]
-
-YOLO_CLASS = ["Broken", "Cut", "DryCherry", "fade", "Floater", "FullBlack", "FullSour",
-              "FungusDamage", "Husk", "Immature", "Parchment", "PartialBlack",
-              "PartialSour", "SevereInsectDamage", "Shell", "SlightInsectDamage", "Withered"]
-
-NUM_CLASSES = len(CLASS_NAMES)
-
-# Color map for visualization
-COLORS = [
-    (255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0), (255, 0, 255),
-    (0, 255, 255), (128, 0, 0), (0, 128, 0), (0, 0, 128), (128, 128, 0),
-    (128, 0, 128), (0, 128, 128), (128, 128, 128)
+# =========================
+# Configuration
+# =========================
+YOLO_CLASSES = [
+    "Broken", "Dry_Cherry", "Fade", "Floater", "Foreign_Items", "Full_Black", "Full_Sour",
+    "Fungus_Damage", "Good", "Husk", "Immature", "Parchment", "Partial_Black",
+    "Partial_Sour", "Severe_Insect_Damage", "Shell", "Slight_Insect_Damage", "Withered"
 ]
 
-# Transforms for PyTorch models
-transform_eff = transforms.Compose([
-    transforms.Resize((384, 384)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+COLORS = [
+    (255, 0, 0), (0, 255, 0), (0, 0, 255),
+    (255, 255, 0), (255, 0, 255), (0, 255, 255),
+    (128, 0, 0), (0, 128, 0), (0, 0, 128),
+    (128, 128, 0), (128, 0, 128), (0, 128, 128),
+    (128, 128, 128), (200, 100, 50), (50, 200, 100),
+    (100, 50, 200), (200, 200, 100), (100, 200, 200)
+]
+
+DEFAULT_EXPORT_DIR = "exports/yolocls_224_batch4_test"
+TARGET_SIZE = (224, 224)
+CONF_THRESHOLD_CLS = 0.5
+
+cls_transform = T.Compose([
+    T.ToPILImage(),
+    T.Resize(TARGET_SIZE),
+    T.ToTensor(),
 ])
 
-transform_mob = transforms.Compose([
-    transforms.Resize((224, 224)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-])
-
+# =========================
+# Model Loader
+# =========================
 @st.cache_resource
-def load_models(device: str = 'cuda'):
-    """
-    Load models: YOLO for det/cls, TorchScript for EffNetV2-S and MobileNetV3-S.
-    Update paths to your TorchScript .pt files.
-    """
-    device = torch.device(device)
+def load_models(device: str = 'cuda') -> Tuple[YOLO, YOLO, torch.nn.Module, torch.nn.Module, torch.device]:
+    device = torch.device(device if torch.cuda.is_available() else 'cpu')
+    det_model = YOLO("models/newModels/objDet/yolo_objDet.pt").to(device)
+    yolo_cls = YOLO("models/newModels/Classify/yoloCLS_S.pt").to(device)
+    effnet = torch.jit.load("models/newModels/Classify/effnet_27epoch.pt", map_location=device).eval()
+    mobilenet = torch.jit.load("models/newModels/Classify/mobilenetv3s_best_ts.pt", map_location=device).eval()
+    return det_model, yolo_cls, effnet, mobilenet, device
 
-    # YOLO Detection
-    det_model = YOLO('runs/detect/200epochs_LT_FT/weights/best.pt')  # Replace with 'path/to/your_fine_tuned_det.pt'
-    det_model.to(device)
-
-    # YOLO Classification
-    cls_model_yolo = YOLO('models/yolov12s-cls_best.pt')  # Replace with 'path/to/your_fine_tuned_yolo_cls.pt'
-    cls_model_yolo.to(device)
-
-    # EfficientNetV2-S TorchScript
-    eff_model = torch.jit.load('models/effv2s_best_ts.pt', map_location=device)
-    eff_model.eval()
-
-    # MobileNetV3-Small TorchScript
-    mob_model = torch.jit.load('models/mobilenetv3s_best_ts.pt', map_location=device)  # Update path if different
-    mob_model.eval()
-
-    return det_model, cls_model_yolo, eff_model, mob_model, device
-
+# =========================
+# Detection and Cropping
+# =========================
 def detect_objects(image: np.ndarray, model: YOLO, conf_threshold: float = 0.25) -> Any:
-    """
-    Detect using YOLO, filter small objects (simplified).
-    """
-    results = model(image, conf=conf_threshold, iou=0.4, verbose=False)
-    return results
+    return model(image, conf=conf_threshold, iou=0.8, verbose=False)
 
-def crop_detections(image: np.ndarray, results: Any, padding_pct: float = 0.1) -> List[Tuple[np.ndarray, Tuple[int, int, int, int]]]:
-    """
-    Crop with padding.
-    """
+def crop_detections(image: np.ndarray, results: Any, margin: float = 0) -> List[Tuple[np.ndarray, Tuple[int, int, int, int]]]:
     crops = []
     boxes = results[0].boxes
-    if boxes is None:
+    if boxes is None or len(boxes) == 0:
         return crops
-    
+
     img_h, img_w = image.shape[:2]
     for box in boxes:
-        x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
-        
-        pad_w, pad_h = (x2 - x1) * padding_pct, (y2 - y1) * padding_pct
-        x1 = max(0, int(x1 - pad_w / 2))
-        y1 = max(0, int(y1 - pad_h / 2))
-        x2 = min(img_w, int(x2 + pad_w / 2))
-        y2 = min(img_h, int(y2 + pad_h / 2))
-        
-        pil_img = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-        crop_pil = pil_img.crop((x1, y1, x2, y2))
-        crop_np = np.array(crop_pil)
-        
-        crops.append((crop_np, (x1, y1, x2, y2)))
-    
+        x1, y1, x2, y2 = box.xyxy.cpu().numpy().astype(int)[0]
+        bw, bh = x2 - x1, y2 - y1
+        dx, dy = (int(bw * margin), int(bh * margin)) if margin < 1 else (int(margin), int(margin))
+        x1, y1 = max(0, x1 - dx), max(0, y1 - dy)
+        x2, y2 = min(img_w, x2 + dx), min(img_h, y2 + dy)
+        crop = image[y1:y2, x1:x2]
+        if crop.size > 0:
+            crops.append((crop, (x1, y1, x2, y2)))
     return crops
 
-def classify_yolo(crop: np.ndarray, model: YOLO, device: torch.device) -> np.ndarray:
-    """
-    YOLO-cls inference.
-    """
-    crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-    results = model(crop_rgb, verbose=False, device=device)
-    probs = results[0].probs.data.cpu().numpy()
-    probs = probs / 100.0  # Normalize to 0-1
-    return probs
-
-def classify_pytorch(crop: np.ndarray, model: torch.nn.Module, transform: transforms.Compose, device: torch.device) -> np.ndarray:
-    """
-    PyTorch/TorchScript model inference.
-    """
-    crop_pil = Image.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
-    input_tensor = transform(crop_pil).unsqueeze(0).to(device)
+# =========================
+# Classification
+# =========================
+def classify_batch(crops: List[np.ndarray], model_type: str, yolo_model=None, effnet=None, 
+                  mobilenet=None, device="cpu", top_k: int = 3) -> List[List[Tuple[str, float]]]:
+    if not crops:
+        return []
     
-    with torch.no_grad():
-        outputs = model(input_tensor)
-        if isinstance(outputs, torch.Tensor):
-            probs = torch.nn.functional.softmax(outputs, dim=1).cpu().numpy()[0]
+    batch_tensors = [cls_transform(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)).to(device) for crop in crops]
+    batch = torch.stack(batch_tensors)
+    
+    try:
+        if model_type == "YOLOv12":
+            results = yolo_model(batch)
+            probs_list = []
+            # Handle both single result and list of results
+            results_iter = results if isinstance(results, (list, tuple)) else [results]
+            for result in results_iter:
+                if hasattr(result, 'probs') and result.probs is not None:
+                    prob = result.probs.data.cpu().numpy()
+                    probs_list.append(prob if prob.ndim > 1 else prob[np.newaxis, :])
+                else:
+                    # Fallback: return zero probabilities if result is invalid
+                    prob = np.zeros(len(YOLO_CLASSES), dtype=np.float32)
+                    probs_list.append(prob[np.newaxis, :])
+            probs = np.concatenate(probs_list, axis=0) if probs_list else np.zeros((len(crops), len(YOLO_CLASSES)))
         else:
-            # Handle if model returns logits differently; adjust if needed
-            probs = torch.nn.functional.softmax(outputs[0], dim=0).cpu().numpy()
+            model = effnet if model_type == "EfficientNet" else mobilenet
+            with torch.no_grad():
+                outputs = model(batch)
+                probs = torch.nn.functional.softmax(outputs, dim=1).cpu().numpy()
+    except Exception as e:
+        st.error(f"Error in classification: {str(e)}")
+        # Return default probabilities for all crops to maintain length
+        probs = np.zeros((len(crops), len(YOLO_CLASSES)), dtype=np.float32)
     
-    return probs
-
-
-    # ENSEMBLE LOGIC
-
-def aggregate_predictions(probs_list: List[np.ndarray], weights: List[float] = None, threshold: float = 0.25) -> Tuple[str, float]:
-    """
-    Weighted average probs, argmax if > threshold.
-    """
-    if weights is None:
-        weights = [1.0 / len(probs_list)] * len(probs_list)
+    # Ensure probs length matches number of crops
+    if probs.shape[0] != len(crops):
+        st.warning(f"Mismatch in prediction count: expected {len(crops)}, got {probs.shape[0]}. Padding with zeros.")
+        probs = np.zeros((len(crops), len(YOLO_CLASSES)), dtype=np.float32)
     
-    avg_probs = np.average(probs_list, axis=0, weights=weights)
-    max_prob = np.max(avg_probs)
-    if max_prob > threshold:
-        pred_class_idx = np.argmax(avg_probs)
-        pred_class = CLASS_NAMES[pred_class_idx]
-        return pred_class, max_prob
-    else:
-        return "Unknown", max_prob
+    batch_predictions = []
+    for prob in probs:
+        top_indices = prob.argsort()[-top_k:][::-1]
+        batch_predictions.append([(YOLO_CLASSES[idx], float(prob[idx])) for idx in top_indices])
+    
+    return batch_predictions
 
+# =========================
+# Visualization
+# =========================
 def visualize_results(image: np.ndarray, crops: List[Tuple], predictions: List[Dict]) -> np.ndarray:
-    """
-    Draw boxes and labels.
-    """
     viz_img = image.copy()
-    for i, ((_, box), p) in enumerate(zip(crops, predictions)):
-        x1, y1, x2, y2 = box
-        pred_class = p['Predicted Class']
-        conf = p['Confidence']
-        color_idx = CLASS_NAMES.index(pred_class) if pred_class != "Unknown" else 12
-        color = COLORS[color_idx]
-        
-        cv2.rectangle(viz_img, (x1, y1), (x2, y2), color, 15)
-        label = f"{pred_class}: {conf:.2f}"
-        cv2.putText(viz_img, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 3, color, 5)
-        
-    
+    img_h, _ = image.shape[:2]
+    base_scale = max(0.0005 * img_h, 0.5)
+    font_thickness = max(int(base_scale * 2), 1)
+
+    for (crop, (x1, y1, x2, y2)), pred in zip(crops, predictions):
+        top1_class = pred["Top1 Class"]
+        top1_conf = pred["Top1 Confidence"]
+        crop_id = pred["Crop ID"]
+        color_idx = YOLO_CLASSES.index(top1_class) if top1_class in YOLO_CLASSES else -1
+        color = COLORS[color_idx % len(COLORS)] if color_idx >= 0 else (100, 100, 100)
+        cv2.rectangle(viz_img, (x1, y1), (x2, y2), color, 3)
+        label = f"ID{crop_id} {top1_class}: {top1_conf:.2f}"
+        cv2.putText(viz_img, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, base_scale, color, font_thickness)
     return viz_img
 
-def process_image(image_bytes: bytes, det_model: YOLO, cls_model_yolo: YOLO, eff_model: torch.nn.Module, 
-                  mob_model: torch.nn.Module, device: torch.device, conf_threshold: float) -> Tuple[Image.Image, List[Image.Image], pd.DataFrame]:
-    """
-    Full pipeline.
-    """
-    image = np.array(Image.open(io.BytesIO(image_bytes)).convert('RGB'))
+# =========================
+# Pipeline
+# =========================
+def process_image(image_bytes: bytes, det_model: YOLO, yolo_cls: YOLO, effnet, mobilenet,
+                  device: torch.device, conf_threshold: float, filename: str, 
+                  classifier_choice: str, export_dir: str, margin: float):
+    image = np.array(Image.open(io.BytesIO(image_bytes)).convert("RGB"))
     image_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-    
     results = detect_objects(image_bgr, det_model, conf_threshold)
-    
-    if len(results[0].boxes) == 0:
+    if not results[0].boxes:
+        st.warning(f"No detections for {filename}")
         return Image.fromarray(image), [], pd.DataFrame()
     
-    crops = crop_detections(image_bgr, results)
-    
+    crops = crop_detections(image_bgr, results, margin)
     if not crops:
+        st.warning(f"No valid crops extracted for {filename}")
         return Image.fromarray(image), [], pd.DataFrame()
     
-    predictions = []
-    crop_pils = []
-    for i, (crop, _) in enumerate(crops):
-        # Classify
-        probs_yolo = classify_yolo(crop, cls_model_yolo, device)
-        probs_eff = classify_pytorch(crop, eff_model, transform_eff, device)
-        probs_mob = classify_pytorch(crop, mob_model, transform_mob, device)
-        
-        pred_class, conf = aggregate_predictions([probs_yolo, probs_eff, probs_mob], threshold=conf_threshold)
-        
-        # Get class names and confidence scores for each model
-        yolo_class = YOLO_CLASS[np.argmax(probs_yolo)]
-        yolo_conf = np.max(probs_yolo)
-        eff_class = CLASS_NAMES[np.argmax(probs_eff)]
-        eff_conf = np.max(probs_eff)
-        mob_class = CLASS_NAMES[np.argmax(probs_mob)]
-        mob_conf = np.max(probs_mob)
-        
-        predictions.append({
-            'Crop ID': i+1,
-            'Predicted Class': pred_class,
-            'Confidence': conf,
-            'Yolov12n-cls': f"{yolo_class} ({yolo_conf*100:.2f})",
-            'EffNetV2-S': f"{eff_class} ({eff_conf*100:.2f})",
-            'MobileNetV3-S': f"{mob_class} ({mob_conf*100:.2f})",
-        })
-        
-        # Crop display with text (crop is already RGB from crop_detections)
-        crop_pil = Image.fromarray(crop)  # Directly use RGB crop
-        draw = ImageDraw.Draw(crop_pil)
-        draw.text((10, 10), f"{pred_class}: {conf:.2f}", fill="white")
-        crop_pils.append(crop_pil)
+    crop_images = [crop for crop, _ in crops]
+    batch_predictions = classify_batch(crop_images, classifier_choice, yolo_cls, effnet, mobilenet, device)
     
-    # Visualize
+    # Validate lengths
+    if len(batch_predictions) != len(crops):
+        st.error(f"Prediction mismatch: {len(batch_predictions)} predictions for {len(crops)} crops in {filename}")
+        return Image.fromarray(image), [], pd.DataFrame()
+    
+    predictions, crop_pils = [], []
+    base_name = os.path.splitext(filename)[0]
+    
+    for (i, (crop, coords)), top_preds in zip(enumerate(crops), batch_predictions):
+        pred_entry = {"Crop ID": i + 1}
+        for rank, (cls_name, conf) in enumerate(top_preds, 1):
+            pred_entry[f"Top{rank} Class"] = cls_name
+            pred_entry[f"Top{rank} Confidence"] = conf
+        predictions.append(pred_entry)
+        
+        crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+        resized = cls_transform(crop_rgb)
+        resized_pil = T.ToPILImage()(resized)
+        export_path = Path(export_dir) / top_preds[0][0]
+        export_path.mkdir(parents=True, exist_ok=True)
+        resized_pil.save(export_path / f"{base_name}_crop{i+1}.jpg")
+        crop_pils.append(resized_pil)
+    
     viz_bgr = visualize_results(image_bgr, crops, predictions)
-    viz_rgb = cv2.cvtColor(viz_bgr, cv2.COLOR_BGR2RGB)
-    viz_pil = Image.fromarray(viz_rgb)
+    viz_pil = Image.fromarray(cv2.cvtColor(viz_bgr, cv2.COLOR_BGR2RGB))
+    
+    annotated_path = Path(export_dir) / "annotated_inputs"
+    annotated_path.mkdir(parents=True, exist_ok=True)
+    viz_pil.save(annotated_path / f"{base_name}_annotated.jpg")
     
     df = pd.DataFrame(predictions)
+    csv_path = Path(export_dir) / "csv_exports"
+    csv_path.mkdir(parents=True, exist_ok=True)
+    df.to_csv(csv_path / f"{base_name}_predictions.csv", index=False)
     
     return viz_pil, crop_pils, df
 
+# =========================
+# LiveCam Processor
+# =========================
+class LiveCamProcessor(VideoTransformerBase):
+    def __init__(self, det_model, yolo_cls, effnet, mobilenet, device, conf_threshold, classifier_choice, margin):
+        self.det_model = det_model
+        self.yolo_cls = yolo_cls
+        self.effnet = effnet
+        self.mobilenet = mobilenet
+        self.device = device
+        self.conf_threshold = conf_threshold
+        self.classifier_choice = classifier_choice
+        self.margin = margin
+        self.frame_count = 0
+
+    def transform(self, frame: av.VideoFrame) -> np.ndarray:
+        self.frame_count += 1
+        image = frame.to_ndarray(format="bgr24")
+        if self.frame_count % 8 != 0: #can change 8 to other number to adjust processing frequency
+            return image
+        
+        results = detect_objects(image, self.det_model, self.conf_threshold)
+        crops = crop_detections(image, results, self.margin)
+        crop_images = [crop for crop, _ in crops]
+        
+        batch_predictions = classify_batch(crop_images, self.classifier_choice, 
+                                         self.yolo_cls, self.effnet, self.mobilenet, self.device)
+        
+        # Ensure predictions match crops
+        if len(batch_predictions) != len(crops):
+            return image  # Skip visualization if mismatch occurs
+        
+        predictions = [{"Crop ID": i + 1, "Top1 Class": preds[0][0], "Top1 Confidence": preds[0][1]} 
+                       for i, preds in enumerate(batch_predictions)]
+        
+        return visualize_results(image, crops, predictions)
+
+# =========================
 # Streamlit App
+# =========================
 def main():
-    st.title("Updated Coffee Bean Defect Detection Pipeline (TorchScript)")
-    st.markdown("Loading TorchScript models for EfficientNetV2-S and MobileNetV3-S.")
+    st.title("Coffee Bean Defect Detection ☕ (Top-3 Classification)")
     
-    device_choice = st.sidebar.selectbox("Device", ['cpu', 'cuda'])
+    st.sidebar.header("Configuration")
+    device_choice = st.sidebar.selectbox("Device", ["cpu", "cuda"])
+    classifier_choice = st.sidebar.selectbox("Classification Model", ["YOLOv12", "EfficientNet", "MobileNet"])
+    export_dir = st.sidebar.text_input("Export Directory", DEFAULT_EXPORT_DIR)
+    margin = st.sidebar.slider("Crop Margin (pixels)", 0, 50, 0, 5)
+    conf_threshold = st.sidebar.slider("Detection Confidence Threshold", 0.1, 0.9, 0.3, 0.05)
+
     with st.spinner("Loading models..."):
-        det_model, cls_model_yolo, eff_model, mob_model, device = load_models(device_choice)
-    
+        det_model, yolo_cls, effnet, mobilenet, device = load_models(device_choice)
+
+    st.header("Live Camera Detection 🎥")
+    if st.checkbox("Enable Live Camera"):
+        with st.spinner("Initializing live camera..."):
+            webrtc_streamer(
+                key="livecam",
+                video_processor_factory=lambda: LiveCamProcessor(
+                    det_model, yolo_cls, effnet, mobilenet, device, conf_threshold, classifier_choice, margin
+                )
+            )
+
     st.sidebar.header("Upload Images")
-    uploaded_files = st.sidebar.file_uploader("Choose images", type=['jpg', 'jpeg', 'png'], accept_multiple_files=True)
+    uploaded_files = st.sidebar.file_uploader("Choose images", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
     
     if not uploaded_files:
         st.info("Please upload at least one image.")
         return
-    
-    conf_threshold = st.sidebar.slider("Confidence Threshold", 0.1, 0.9, 0.3, 0.05)
-    
+
     all_dfs = []
     for uploaded_file in uploaded_files:
         st.subheader(f"Processing: {uploaded_file.name}")
-        
-        viz_img, crop_imgs, df = process_image(uploaded_file.read(), det_model, cls_model_yolo, eff_model, mob_model, device, conf_threshold)
-        
+        viz_img, crop_imgs, df = process_image(
+            uploaded_file.read(), det_model, yolo_cls, effnet, mobilenet,
+            device, conf_threshold, uploaded_file.name, classifier_choice, export_dir, margin
+        )
+
         col1, col2 = st.columns(2)
         with col1:
-            st.image(viz_img, caption="Original with Detections", use_container_width=True)
+            st.image(viz_img, caption="Detections + Top-1 Classification", use_container_width=True)
         with col2:
             if crop_imgs:
                 for i, crop_img in enumerate(crop_imgs[:3]):
                     st.image(crop_img, caption=f"Crop {i+1}", use_container_width=True)
                 if len(crop_imgs) > 3:
-                    st.info(f"... and {len(crop_imgs)-3} more")
-        
+                    st.info(f"... and {len(crop_imgs)-3} more crops")
+
         if not df.empty:
             st.dataframe(df)
             all_dfs.append(df)
-    
-    if len(all_dfs) > 1:
+            st.success(f"CSV saved to {export_dir}/csv_exports/{os.path.splitext(uploaded_file.name)[0]}_predictions.csv")
+
+    if all_dfs:
         combined_df = pd.concat(all_dfs, ignore_index=True)
-        st.subheader("Overall Summary")
+        st.subheader("Summary of Predictions (Top-3 per Crop)")
         st.dataframe(combined_df)
-        if 'Predicted Class' in combined_df.columns:
-            counts = combined_df[combined_df['Predicted Class'] != 'Unknown']['Predicted Class'].value_counts()
-            st.bar_chart(counts)
-        csv = combined_df.to_csv(index=False).encode('utf-8')
-        st.download_button("Download CSV", csv, "defect_predictions.csv", "text/csv")
-    elif all_dfs:
-        csv = all_dfs[0].to_csv(index=False).encode('utf-8')
-        st.download_button("Download CSV", csv, "defect_predictions.csv", "text/csv")
+        csv = combined_df.to_csv(index=False).encode("utf-8")
+        st.download_button("Download Combined CSV", csv, "yolo_predictions.csv", "text/csv")
 
 if __name__ == "__main__":
     main()
-
-# Notes:
-# - Fixed TorchScript loading with torch.jit.load(). No more TypeError.
-# - Assumed MobileNet path as 'models/mobilenetv3s_best_ts.pt'; update if different.
-# - In classify_pytorch, added handling for output tensor (common for ScriptModule).
-# - If your ScriptModule returns differently (e.g., list/tuple), adjust the probs extraction.
-# - FlashAttention warning: Benign; scaled_dot_product_attention is used as fallback (no impact).
-# - For fine-tuning your own: After training nn.Module, script with torch.jit.script(model) or trace, save as .pt.
-# - Test: Ensure models output shape (1, 13) for batch_size=1.

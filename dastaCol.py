@@ -7,7 +7,7 @@ from ultralytics import YOLO
 # --- CONFIG ---
 MODEL_PATH = "/home/jap/projects/yolov12/runs/detect/200epochs_LT_FT/weights/best.pt"
 SOURCE_DIR = "/home/jap/projects/yolov12/datasets/mergedDataset_Augmentedv2_1"
-EXPORT_DIR = "/home/jap/projects/yolov12/crops2_mergedDataset_Augmentedv2_1"
+EXPORT_DIR = "/home/jap/projects/yolov12/crop/crops2_mergedDataset_Augmentedv2_1"
 TARGET_SIZE = (224, 224)
 CONF_THRESHOLD = 0.25
 MAX_DET = 1  # Raise detection cap
